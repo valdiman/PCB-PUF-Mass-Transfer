@@ -1,5 +1,11 @@
+# Review and visualize data
 
+# Install packages
+install.packages("tidyr")
+install.packages("dplyr")
+install.packages("ggplot2")
 
+# Load libraries
 library(tidyr)
 library(dplyr)
 library(ggplot2)
