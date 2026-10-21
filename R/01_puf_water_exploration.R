@@ -101,4 +101,7 @@ ggplot(water_data, aes(x = time_hr, y = Cw_ng_L,
                        labels = c("PCB4", "PCB18", "PCB52")) +
   theme_bw(base_size = 12)
 
+# Export data
+write.csv(puf_data,"Data/Processed/puf_data.csv", row.names = FALSE)
+write.csv(water_data,"Data/Processed/water_data.csv", row.names = FALSE)
 

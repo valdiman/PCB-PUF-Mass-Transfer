@@ -1,372 +1,640 @@
 # ============================================================
 # PCB-PUF MASS TRANSFER
-# WATER-AIR-PUF KINETIC EXPERIMENT
+# WATER-AIR-PUF KINETIC MODEL
 #
-# STEP 1: DATA IMPORT AND PREPARATION
+# SCRIPT 02: MODELING
 # ============================================================
 
 
-# ------------------------------------------------------------
-# 1. LOAD LIBRARIES
-# ------------------------------------------------------------
+# Load libraries ----------------------------------------------------------
 
 library(dplyr)
-library(tidyr)
-library(stringr)
 library(ggplot2)
+library(deSolve)
 
 
-# ------------------------------------------------------------
-# 2. IMPORT RAW DATA
-# ------------------------------------------------------------
+# Read data ---------------------------------------------------------------
 
-data_raw <- read.csv(
-  "Data/puf_water.csv",
-  na.strings = c("", "NA"),
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-
-# Inspect data
-str(data_raw)
-head(data_raw)
-names(data_raw)
-nrow(data_raw)
+puf_data <- read.csv("Data/Processed/puf_data.csv")
+water_data <- read.csv("Data/Processed/water_data.csv")
 
 
-# ------------------------------------------------------------
-# 3. EXPERIMENTAL PARAMETERS
-# ------------------------------------------------------------
+# Experimental parameters -------------------------------------------------
 
-# Water volume (L)
-Vw <- 0.200
+# Compartment volumes (cm3)
 
-# Water volume extracted for analysis (L)
-V_extracted <- 0.100
+Vw <- 200
+Vpuf <- 29
 
 # Headspace geometry (cm)
+
 h <- 4.8
 D_top <- 3.1
 D_bottom <- 8.5
 
-# Calculate headspace volume (cm3)
-Va_cm3 <- (pi * h / 12) *
+# Headspace volume (cm3)
+
+Va <- (pi * h / 12) *
   (D_top^2 + D_top * D_bottom + D_bottom^2)
 
-# Convert to liters
-Va <- Va_cm3 / 1000
+# Interfacial areas (cm2)
 
-# PUF volume (L)
-Vpuf <- 0.029
+Aaw <- pi * (D_bottom / 2)^2
+Apuf <- 7.07
 
-# Shaking speed (rpm)
+# Experimental conditions
+
+T <- 298.15
 shaking_rpm <- 60
 
-# Display experimental parameters
-cat("\nEXPERIMENTAL PARAMETERS\n")
-cat("-----------------------\n")
-cat("Water volume:", Vw, "L\n")
-cat("Water extracted:", V_extracted, "L\n")
-cat("Headspace volume:", round(Va, 4), "L\n")
-cat("PUF volume:", Vpuf, "L\n")
-cat("Shaking speed:", shaking_rpm, "rpm\n")
+# Display geometry
+
+cat("Water volume:", Vw, "cm3\n")
+cat("Air volume:", Va, "cm3\n")
+cat("PUF volume:", Vpuf, "cm3\n")
+cat("Water-air area:", Aaw, "cm2\n")
+cat("PUF area:", Apuf, "cm2\n")
 
 
-# ------------------------------------------------------------
-# 4. CONVERT PCB DATA TO LONG FORMAT
-# ------------------------------------------------------------
+# Air-water partition coefficients ---------------------------------------
 
-data_long <- data_raw %>%
-  pivot_longer(
-    cols = c(PCB4, PCB18.30, PCB52),
-    names_to = "congener",
-    values_to = "PCB_value"
+partition_data <- data.frame(
+  congener = c("PCB4", "PCB18.30", "PCB52"),
+  logKaw = c(-1.87155, -1.88355, -1.88455)
+)
+
+partition_data$Kaw <- 10^partition_data$logKaw
+
+print(partition_data)
+
+
+# PUF-air partition coefficient ------------------------------------------
+
+# PCB4 octanol-air partition coefficient
+
+logKoa_PCB4 <- 6.789298102
+
+# PUF density (g/m3)
+
+rho_puf <- 21300
+
+# PCB4 PUF-air partition coefficient
+# Dimensionless after multiplication by PUF density
+
+Kpuf_PCB4 <- 10^(
+  0.6366 * logKoa_PCB4 - 3.1774
+) * rho_puf
+
+cat("PCB4 Kpuf:", Kpuf_PCB4, "\n")
+
+
+# Measured initial water concentrations ----------------------------------
+
+initial_concentrations <- data.frame(
+  congener = c("PCB4", "PCB18.30", "PCB52"),
+  Cw0_ng_L = c(
+    3204.195,
+    3190.523,
+    4538.160
   )
+)
 
+# Initial PCB mass in water (ng)
 
-# ------------------------------------------------------------
-# 5. IDENTIFY SAMPLE TYPES AND REPLICATES
-# ------------------------------------------------------------
-
-data_long <- data_long %>%
+initial_concentrations <- initial_concentrations %>%
   mutate(
-    
-    sample_type = case_when(
-      str_detect(sample_id, "^BLK_PUF") ~ "Blank",
-      str_detect(sample_id, "_PUF_") ~ "PUF",
-      str_detect(sample_id, "_W_") ~ "Water",
-      TRUE ~ "Unknown"
-    ),
-    
-    replicate = str_extract(
-      sample_id,
-      "R[0-9]+$"
-    )
-    
+    Mw0_ng = Cw0_ng_L * Vw / 1000
   )
 
-
-# ------------------------------------------------------------
-# 6. ASSIGN NOMINAL SAMPLING TIMES
-# ------------------------------------------------------------
-
-# Actual time_hr values are preserved.
-# Nominal times are used only to organize replicates.
-
-data_long <- data_long %>%
-  mutate(
-    
-    time_nominal = case_when(
-      is.na(time_hr) ~ NA_real_,
-      time_hr < 1   ~ 0.5,
-      time_hr < 12  ~ 6,
-      time_hr < 100 ~ 72,
-      time_hr < 180 ~ 120,
-      time_hr < 350 ~ 240,
-      TRUE ~ 480
-    )
-    
-  )
+print(initial_concentrations)
 
 
-# ------------------------------------------------------------
-# 7. SEPARATE WATER, PUF AND BLANK DATA
-# ------------------------------------------------------------
+# Prepare experimental observations --------------------------------------
 
-water_data <- data_long %>%
-  filter(sample_type == "Water")
-
-puf_data <- data_long %>%
-  filter(sample_type == "PUF")
-
-blank_data <- data_long %>%
-  filter(sample_type == "Blank")
-
-
-# ------------------------------------------------------------
-# 8. CALCULATE WATER CONCENTRATION
-# ------------------------------------------------------------
-
-# Original water data: ng/100 mL
-#
-# Cw (ng/L) = PCB_value / 0.100 L
-#
-# Total water PCB mass:
-# Mw (ng) = Cw * 0.200 L
+# Convert time from hours to days
 
 water_data <- water_data %>%
   mutate(
-    
-    Cw_ng_L = PCB_value / V_extracted,
-    
-    Mw_ng = Cw_ng_L * Vw
-    
+    time_day = time_hr / 24
   )
-
-
-# ------------------------------------------------------------
-# 9. ORGANIZE PUF MEASUREMENTS
-# ------------------------------------------------------------
-
-# Original PUF data: ng/PUF
-#
-# No blank correction at this stage.
 
 puf_data <- puf_data %>%
   mutate(
-    M_PUF_ng = PCB_value
+    time_day = time_hr / 24
   )
 
+# Water observations
 
-# ------------------------------------------------------------
-# 10. ORGANIZE PUF BLANKS
-# ------------------------------------------------------------
-
-blank_data <- blank_data %>%
-  mutate(
-    M_blank_ng = PCB_value
-  )
-
-
-# ------------------------------------------------------------
-# 11. CHECK DATA STRUCTURE
-# ------------------------------------------------------------
-
-cat("\nSAMPLE COUNTS\n")
-cat("-------------\n")
-
-print(
-  data_long %>%
-    count(sample_type)
-)
-
-cat("\nSAMPLING TIMES\n")
-cat("--------------\n")
-
-print(
-  data_long %>%
-    filter(sample_type != "Blank") %>%
-    distinct(time_nominal, time_hr) %>%
-    arrange(time_nominal, time_hr)
-)
-
-
-# ------------------------------------------------------------
-# 12. COMBINE WATER AND PUF MEASUREMENTS
-# ------------------------------------------------------------
-
-# IMPORTANT:
-# This pairing assumes that water and PUF samples
-# with the same replicate ID came from the same reactor.
-#
-# If they came from different reactors, this pairing
-# must not be used for replicate-level mass balances.
-
-mass_balance_data <- water_data %>%
-  select(
+water_obs <- water_data %>%
+  transmute(
     congener,
-    time_nominal,
-    replicate,
-    time_water_hr = time_hr,
-    Cw_ng_L,
-    Mw_ng
-  ) %>%
-  left_join(
-    
-    puf_data %>%
-      select(
-        congener,
-        time_nominal,
-        replicate,
-        time_puf_hr = time_hr,
-        M_PUF_ng
-      ),
-    
-    by = c(
-      "congener",
-      "time_nominal",
-      "replicate"
-    )
-    
-  ) %>%
-  mutate(
-    M_observed_ng = Mw_ng + M_PUF_ng
+    time_day,
+    sample_type = "Water",
+    observed = Cw_ng_L
   )
 
+# PUF observations
 
-# ------------------------------------------------------------
-# 13. CHECK THE COMBINED DATA
-# ------------------------------------------------------------
+puf_obs <- puf_data %>%
+  transmute(
+    congener,
+    time_day,
+    sample_type = "PUF",
+    observed = PCB_value
+  )
 
-cat("\nWATER-PUF DATA\n")
-cat("--------------\n")
+# Combine observations
 
-print(mass_balance_data)
+observations <- bind_rows(
+  water_obs,
+  puf_obs
+)
+
+print(head(observations))
 
 
-# ------------------------------------------------------------
-# 14. PREPARE KINETIC DATA
-# ------------------------------------------------------------
+# ============================================================
+# WATER-AIR-PUF KINETIC MODEL
+# ============================================================
 
-# Proposed kinetic fitting window:
-# approximately 0.5 to 200 hours.
+# State variables:
 #
-# Actual measured points within this interval:
-# 0.5, 6, 73 and 121 hours.
+# Cw   = PCB concentration in water (ng/L)
+# Ca   = PCB concentration in air (ng/L)
+# Cpuf = PCB concentration in PUF (ng/L PUF)
+#
+# Transfer coefficients:
+#
+# kaw_o = water-air mass-transfer coefficient (cm/day)
+# ro    = air-PUF mass-transfer coefficient (cm/day)
+#
+# Partition coefficients:
+#
+# Kaw  = air-water partition coefficient
+# Kpuf = PUF-air partition coefficient
 
-water_kinetic <- water_data %>%
-  filter(
-    time_hr >= 0.4,
-    time_hr <= 200
-  )
-
-puf_kinetic <- puf_data %>%
-  filter(
-    time_hr >= 0.4,
-    time_hr <= 200
-  )
-
-library(deSolve)
 
 water_air_puf_model <- function(t, state, parameters) {
   
-  with(as.list(c(state, parameters)), {
-    
-    # Concentrations (ng/L)
-    Cw <- Mw / Vw
-    Ca <- Ma / Va
-    
-    # Water-air transfer (ng/h)
-    Jwa <- Kwa * (Cw - Ca / Kaw)
-    
-    # Air-PUF transfer (ng/h)
-    Jap <- kua * Ca - ke * Mpuf
-    
-    # Mass balances (ng/h)
-    dMw <- -Jwa
-    dMa <- Jwa - Jap
-    dMpuf <- Jap
-    
-    list(
-      c(dMw, dMa, dMpuf),
-      Cw = Cw,
-      Ca = Ca,
-      Jwa = Jwa,
-      Jap = Jap
-    )
-  })
+  # State variables
+  
+  Cw <- unname(state["Cw"])
+  Ca <- unname(state["Ca"])
+  Cpuf <- unname(state["Cpuf"])
+  
+  # Parameters
+  
+  Vw <- unname(parameters["Vw"])
+  Va <- unname(parameters["Va"])
+  Vpuf <- unname(parameters["Vpuf"])
+  
+  Aaw <- unname(parameters["Aaw"])
+  Apuf <- unname(parameters["Apuf"])
+  
+  Kaw <- unname(parameters["Kaw"])
+  Kpuf <- unname(parameters["Kpuf"])
+  
+  kaw_o <- unname(parameters["kaw_o"])
+  ro <- unname(parameters["ro"])
+  
+  # Differential equations (ng/L/day)
+  
+  dCw <- -(kaw_o * Aaw / Vw) *
+    (Cw - Ca / Kaw)
+  
+  dCa <- (kaw_o * Aaw / Va) *
+    (Cw - Ca / Kaw) -
+    (ro * Apuf / Va) *
+    (Ca - Cpuf / Kpuf)
+  
+  dCpuf <- (ro * Apuf / Vpuf) *
+    (Ca - Cpuf / Kpuf)
+  
+  return(
+    list(c(dCw, dCa, dCpuf))
+  )
 }
 
-# ------------------------------------------------------------
-# STEP 4A: MODEL SIMULATION
-# ------------------------------------------------------------
 
-simulate_pcb <- function(
-    times,
-    Cw0,
-    Kwa,
-    kua,
-    Kaw,
-    ke = 0
-) {
+# ============================================================
+# MODEL SIMULATION
+# ============================================================
+
+simulate_pcb <- function(times,
+                         Cw0,
+                         kaw_o,
+                         ro,
+                         Kaw,
+                         Kpuf) {
   
-  # Initial conditions (ng)
+  # Initial conditions (ng/L)
+  
   initial_state <- c(
-    Mw = Cw0 * Vw,
-    Ma = 0,
-    Mpuf = 0
+    Cw = unname(Cw0),
+    Ca = 0,
+    Cpuf = 0
   )
   
-  # Model parameters
+  # Parameters
+  
   parameters <- c(
-    Vw = Vw,
-    Va = Va,
-    Kwa = Kwa,
-    Kaw = Kaw,
-    kua = kua,
-    ke = ke
+    Vw = unname(Vw),
+    Va = unname(Va),
+    Vpuf = unname(Vpuf),
+    Aaw = unname(Aaw),
+    Apuf = unname(Apuf),
+    Kaw = unname(Kaw),
+    Kpuf = unname(Kpuf),
+    kaw_o = unname(kaw_o),
+    ro = unname(ro)
   )
   
-  # Simulation times
+  # Simulation times (days)
+  
   times <- sort(unique(c(0, times)))
   
   # Solve differential equations
-  simulation <- deSolve::ode(
-    y = initial_state,
-    times = times,
-    func = water_air_puf_model,
-    parms = parameters,
-    method = "lsoda"
+  
+  simulation <- tryCatch(
+    suppressWarnings(
+      deSolve::ode(
+        y = initial_state,
+        times = times,
+        func = water_air_puf_model,
+        parms = parameters,
+        method = "lsoda"
+      )
+    ),
+    error = function(e) NULL
   )
   
-  # Convert to data frame and calculate concentrations
-  simulation <- as.data.frame(simulation) %>%
+  if (is.null(simulation)) {
+    return(NULL)
+  }
+  
+  simulation <- as.data.frame(simulation)
+  
+  # Verify simulation
+  
+  required_columns <- c(
+    "time", "Cw", "Ca", "Cpuf"
+  )
+  
+  if (!all(required_columns %in% names(simulation))) {
+    return(NULL)
+  }
+  
+  if (nrow(simulation) != length(times)) {
+    return(NULL)
+  }
+  
+  if (!all(is.finite(as.matrix(simulation)))) {
+    return(NULL)
+  }
+  
+  # Calculate compartment masses (ng)
+  
+  simulation <- simulation %>%
     mutate(
-      Cw_pred = Mw / Vw,
-      Ca_pred = Ma / Va,
-      Mpuf_pred = Mpuf
+      Mw_ng = Cw * Vw / 1000,
+      Ma_ng = Ca * Va / 1000,
+      Mpuf_ng = Cpuf * Vpuf / 1000,
+      
+      Mtotal_ng = Mw_ng + Ma_ng + Mpuf_ng
     )
   
   return(simulation)
 }
 
+
+# ============================================================
+# TEST MODEL SIMULATION: PCB4
+# ============================================================
+
+# Partition coefficients
+
+Kaw_PCB4 <- partition_data$Kaw[
+  partition_data$congener == "PCB4"
+]
+
+# Measured initial water concentration
+
+Cw0_PCB4 <- initial_concentrations$Cw0_ng_L[
+  initial_concentrations$congener == "PCB4"
+]
+
+# Experimental sampling times (days)
+
+times_test <- c(
+  0, 0.5, 6, 73, 121, 241, 480
+) / 24
+
+# Hypothetical transfer coefficients (cm/day)
+
+kaw_o_test <- 10
+ro_test <- 10
+
+# Test simulation
+
+test_simulation <- simulate_pcb(
+  times = times_test,
+  Cw0 = Cw0_PCB4,
+  kaw_o = kaw_o_test,
+  ro = ro_test,
+  Kaw = Kaw_PCB4,
+  Kpuf = Kpuf_PCB4
+)
+
+print(test_simulation)
+
+
+# Mass conservation -------------------------------------------------------
+
+if (!is.null(test_simulation)) {
+  
+  mass_error <- max(
+    abs(
+      test_simulation$Mtotal_ng -
+        test_simulation$Mtotal_ng[1]
+    )
+  )
+  
+  cat("Maximum mass-balance error:", mass_error, "ng\n")
+}
+
+
+# ============================================================
+# OBJECTIVE FUNCTION
+# ============================================================
+
+# Estimate:
+#
+# kaw_o = water-air transfer coefficient (cm/day)
+# ro    = air-PUF transfer coefficient (cm/day)
+#
+# Initial concentration is fixed at the measured value.
+
+
+objective_function <- function(log_parameters,
+                               congener_name,
+                               Kaw_value,
+                               Kpuf_value,
+                               Cw0_value) {
+  
+  # Convert parameters to original scale
+  
+  pars <- exp(log_parameters)
+  
+  kaw_o <- unname(pars[1])
+  ro <- unname(pars[2])
+  
+  # Select observations
+  
+  obs <- observations %>%
+    filter(congener == congener_name)
+  
+  # Run simulation
+  
+  sim <- simulate_pcb(
+    times = obs$time_day,
+    Cw0 = Cw0_value,
+    kaw_o = kaw_o,
+    ro = ro,
+    Kaw = Kaw_value,
+    Kpuf = Kpuf_value
+  )
+  
+  # Penalize failed simulations
+  
+  if (is.null(sim)) {
+    return(1e20)
+  }
+  
+  # Match predictions with observations
+  
+  idx <- match(obs$time_day, sim$time)
+  
+  if (any(is.na(idx))) {
+    return(1e20)
+  }
+  
+  predicted <- ifelse(
+    obs$sample_type == "Water",
+    sim$Cw[idx],
+    sim$Mpuf_ng[idx]
+  )
+  
+  # Separate scaling factors
+  
+  water_scale <- median(
+    obs$observed[obs$sample_type == "Water"],
+    na.rm = TRUE
+  )
+  
+  puf_scale <- median(
+    obs$observed[obs$sample_type == "PUF"],
+    na.rm = TRUE
+  )
+  
+  scales <- ifelse(
+    obs$sample_type == "Water",
+    water_scale,
+    puf_scale
+  )
+  
+  if (any(!is.finite(predicted)) ||
+      any(!is.finite(scales)) ||
+      any(scales <= 0)) {
+    return(1e20)
+  }
+  
+  # Weighted sum of squared residuals
+  
+  sum(
+    ((obs$observed - predicted) / scales)^2
+  )
+}
+
+
+# ============================================================
+# FIT PCB4
+# ============================================================
+
+# Initial parameter guesses (cm/day)
+
+initial_guess <- c(
+  kaw_o = 10,
+  ro = 10
+)
+
+# Provisional parameter bounds (cm/day)
+# These are numerical search limits, not physical constraints.
+
+lower <- c(
+  kaw_o = 1e-4,
+  ro = 1e-4
+)
+
+upper <- c(
+  kaw_o = 1000,
+  ro = 1000
+)
+
+# Optimization
+
+fit_PCB4 <- optim(
+  par = log(initial_guess),
+  fn = objective_function,
+  
+  congener_name = "PCB4",
+  Kaw_value = Kaw_PCB4,
+  Kpuf_value = Kpuf_PCB4,
+  Cw0_value = Cw0_PCB4,
+  
+  method = "L-BFGS-B",
+  
+  lower = log(lower),
+  upper = log(upper),
+  
+  control = list(maxit = 10000)
+)
+
+# Estimated parameters
+
+estimated_parameters <- setNames(
+  exp(fit_PCB4$par),
+  names(initial_guess)
+)
+
+cat("\nESTIMATED PARAMETERS: PCB4\n")
+
+print(estimated_parameters)
+
+cat("\nOptimization convergence:\n")
+print(fit_PCB4$convergence)
+
+cat("\nObjective function value:\n")
+print(fit_PCB4$value)
+
+
+# ============================================================
+# MODEL PREDICTIONS
+# ============================================================
+
+# Simulation times (days)
+
+times_plot <- seq(
+  0,
+  480 / 24,
+  length.out = 500
+)
+
+# Simulate fitted model
+
+sim_PCB4 <- simulate_pcb(
+  times = times_plot,
+  Cw0 = Cw0_PCB4,
+  kaw_o = unname(estimated_parameters["kaw_o"]),
+  ro = unname(estimated_parameters["ro"]),
+  Kaw = Kaw_PCB4,
+  Kpuf = Kpuf_PCB4
+)
+
+# Convert predicted time to hours for plotting
+
+if (!is.null(sim_PCB4)) {
+  
+  sim_PCB4 <- sim_PCB4 %>%
+    mutate(
+      time_hr = time * 24
+    )
+}
+
+
+# ============================================================
+# OBSERVED VS PREDICTED: WATER
+# ============================================================
+
+p_water_fit <- ggplot() +
+  
+  geom_point(
+    data = water_data %>%
+      filter(congener == "PCB4"),
+    
+    aes(
+      x = time_hr,
+      y = Cw_ng_L
+    ),
+    
+    size = 3,
+    color = "blue"
+  ) +
+  
+  geom_line(
+    data = sim_PCB4,
+    
+    aes(
+      x = time_hr,
+      y = Cw
+    ),
+    
+    linewidth = 1,
+    color = "black"
+  ) +
+  
+  labs(
+    x = "Time (h)",
+    y = "PCB4 concentration in water (ng/L)",
+    title = "PCB4: Water depletion"
+  ) +
+  
+  theme_bw(base_size = 12)
+
+print(p_water_fit)
+
+
+# ============================================================
+# OBSERVED VS PREDICTED: PUF
+# ============================================================
+
+p_puf_fit <- ggplot() +
+  
+  geom_point(
+    data = puf_data %>%
+      filter(congener == "PCB4"),
+    
+    aes(
+      x = time_hr,
+      y = PCB_value
+    ),
+    
+    size = 3,
+    color = "blue"
+  ) +
+  
+  geom_line(
+    data = sim_PCB4,
+    
+    aes(
+      x = time_hr,
+      y = Mpuf_ng
+    ),
+    
+    linewidth = 1,
+    color = "black"
+  ) +
+  
+  labs(
+    x = "Time (h)",
+    y = "PCB4 mass in PUF (ng/PUF)",
+    title = "PCB4: PUF accumulation"
+  ) +
+  
+  theme_bw(base_size = 12)
+
+print(p_puf_fit)
+
+
+# ============================================================
+# END OF SCRIPT 02
+# ============================================================
