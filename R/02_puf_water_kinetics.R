@@ -47,15 +47,6 @@ Apuf <- 7.07
 T <- 298.15
 shaking_rpm <- 60
 
-# Display geometry
-
-cat("Water volume:", Vw, "cm3\n")
-cat("Air volume:", Va, "cm3\n")
-cat("PUF volume:", Vpuf, "cm3\n")
-cat("Water-air area:", Aaw, "cm2\n")
-cat("PUF area:", Apuf, "cm2\n")
-
-
 # Air-water partition coefficients ---------------------------------------
 
 partition_data <- data.frame(
@@ -84,9 +75,6 @@ rho_puf <- 21300
 Kpuf_PCB4 <- 10^(
   0.6366 * logKoa_PCB4 - 3.1774
 ) * rho_puf
-
-cat("PCB4 Kpuf:", Kpuf_PCB4, "\n")
-
 
 # Measured initial water concentrations ----------------------------------
 
@@ -638,3 +626,303 @@ print(p_puf_fit)
 # ============================================================
 # END OF SCRIPT 02
 # ============================================================
+
+
+# ============================================================
+# PCB-PUF MASS TRANSFER
+# SCRIPT 03: WATER-PUF EQUILIBRIUM ANALYSIS
+# ============================================================
+
+
+# Load libraries ----------------------------------------------------------
+
+library(dplyr)
+library(ggplot2)
+
+
+# Read data ---------------------------------------------------------------
+
+puf_data <- read.csv("Data/Processed/puf_data.csv")
+water_data <- read.csv("Data/Processed/water_data.csv")
+
+
+# Experimental parameters -------------------------------------------------
+
+# Compartment volumes (cm3)
+Vw <- 200
+Va <- 135.98
+Vpuf <- 29
+
+# Experimental conditions
+T <- 298.15
+shaking_rpm <- 60
+
+
+# Partition coefficients --------------------------------------------------
+
+# Air-water partition coefficient: PCB4
+logKaw_PCB4 <- -1.87155
+Kaw_PCB4 <- 10^logKaw_PCB4
+
+# PUF-air partition coefficient: PCB4
+logKoa_PCB4 <- 6.789298102
+
+# PUF density (g/m3)
+rho_puf <- 21300
+
+Kpuf_PCB4 <- 10^(
+  0.6366 * logKoa_PCB4 - 3.1774
+) * rho_puf
+
+
+# Theoretical equilibrium PUF-water ratio --------------------------------
+
+Kpuf_water_eq <- Kpuf_PCB4 * Kaw_PCB4
+
+print(Kpuf_water_eq)
+
+
+# Prepare water measurements ---------------------------------------------
+
+water_pcb4 <- water_data %>%
+  filter(congener == "PCB4") %>%
+  mutate(
+    replicate = sub(".*_(R[0-9]+)$", "\\1", sample_id),
+    time_group = sub("^(T[^_]+)_.*$", "\\1", sample_id)
+  ) %>%
+  select(
+    replicate,
+    time_group,
+    time_hr,
+    Cw_ng_L
+  )
+
+
+# Prepare PUF measurements -----------------------------------------------
+
+puf_pcb4 <- puf_data %>%
+  filter(congener == "PCB4") %>%
+  mutate(
+    replicate = sub(".*_(R[0-9]+)$", "\\1", sample_id),
+    time_group = sub("^(T[^_]+)_.*$", "\\1", sample_id),
+    
+    # Convert PUF mass to concentration (ng/L PUF)
+    Cpuf_ng_L = PCB_value * 1000 / Vpuf
+  ) %>%
+  select(
+    replicate,
+    time_group,
+    Cpuf_ng_L
+  )
+
+
+# Pair water and PUF measurements ----------------------------------------
+
+partition_obs <- water_pcb4 %>%
+  inner_join(
+    puf_pcb4,
+    by = c("replicate", "time_group")
+  )
+
+
+# Calculate experimental partition ratio ---------------------------------
+
+partition_obs <- partition_obs %>%
+  mutate(
+    Kpuf_water_obs = Cpuf_ng_L / Cw_ng_L
+  )
+
+
+# Examine results ---------------------------------------------------------
+
+partition_obs %>%
+  arrange(time_hr) %>%
+  print()
+
+# Normalized equilibrium ratio --------------------------------------------
+
+partition_obs <- partition_obs %>%
+  mutate(
+    R_eq = Kpuf_water_obs / Kpuf_water_eq
+  )
+
+# Examine results
+partition_obs %>%
+  select(
+    time_hr,
+    replicate,
+    Kpuf_water_obs,
+    R_eq
+  ) %>%
+  arrange(time_hr) %>%
+  print()
+
+# Headspace response time -----------------------------------------------
+
+# Candidate mass-transfer coefficients (cm/day)
+kaw_values <- c(0.1, 1, 10, 100)
+ro_values <- c(0.1, 1, 10, 100)
+
+# Parameter combinations
+response_grid <- expand.grid(
+  kaw_o = kaw_values,
+  ro = ro_values
+)
+
+# Characteristic response time
+response_grid <- response_grid %>%
+  mutate(
+    tau_air_day = Va /
+      (kaw_o * Aaw / Kaw_PCB4 + ro * Apuf),
+    
+    tau_air_hr = tau_air_day * 24
+  )
+
+# Examine results
+print(response_grid)
+
+# ============================================================
+# WATER-AIR MASS TRANSFER: PCB4
+# Comparison of reference coefficients
+# ============================================================
+
+# Molecular weights (g/mol) -----------------------------------
+
+MW.pcb <- 188.65
+MH2O <- 18.015
+MCO2 <- 44.01
+
+
+# Physical properties -----------------------------------------
+
+# Diffusion coefficients (cm2/s)
+D.water.air <- 0.2743615
+D.co2.w <- 1.67606e-5
+
+# Kinematic viscosity of water (cm2/s)
+v.H2O <- 0.010072884
+
+# Reference air-side transfer coefficient (m/s)
+V.water.air <- 0.003
+
+# PCB4 air-water partition coefficient
+Kaw <- 10^(-1.87155)
+
+
+# PCB diffusion coefficients ----------------------------------
+
+D.pcb.air <- D.water.air *
+  (MW.pcb / MH2O)^(-0.5)
+
+D.pcb.water <- D.co2.w *
+  (MW.pcb / MCO2)^(-0.5)
+
+# Schmidt number
+SC.pcb.w <- v.H2O / D.pcb.water
+
+
+# Reference CO2 coefficients ----------------------------------
+
+# Film thicknesses from Kanwisher (1963)
+# Units: micrometers
+
+delta_weak <- 127
+delta_strong <- 47
+
+# Convert micrometers to cm
+delta_weak_cm <- delta_weak * 1e-4
+delta_strong_cm <- delta_strong * 1e-4
+
+# Calculate CO2 water-side coefficients (cm/s)
+KL_weak_cm_s <- D.co2.w / delta_weak_cm
+KL_strong_cm_s <- D.co2.w / delta_strong_cm
+
+# Convert to m/s
+KL_weak <- KL_weak_cm_s / 100
+KL_strong <- KL_strong_cm_s / 100
+
+
+# Define scenarios --------------------------------------------
+
+transfer_scenarios <- data.frame(
+  scenario = c(
+    "Published",
+    "Weak stirring",
+    "Strong stirring"
+  ),
+  
+  KL_CO2 = c(
+    4.1e-2,
+    KL_weak,
+    KL_strong
+  )
+)
+
+
+# Air-side transfer coefficient -------------------------------
+
+KG <- V.water.air *
+  (D.pcb.air / D.water.air)^0.67
+
+
+# Calculate overall coefficients ------------------------------
+
+transfer_scenarios$KL_PCB4 <-
+  transfer_scenarios$KL_CO2 *
+  (SC.pcb.w / 600)^(-0.5)
+
+transfer_scenarios$kaw_o_m_s <- 1 / (
+  1 / (KG * Kaw) +
+    1 / transfer_scenarios$KL_PCB4
+)
+
+# Convert m/s to cm/day
+transfer_scenarios$kaw_o_cm_d <-
+  transfer_scenarios$kaw_o_m_s * 100 * 86400
+
+
+# Resistance contributions ------------------------------------
+
+transfer_scenarios$R_air <- 1 / (KG * Kaw)
+
+transfer_scenarios$R_water <- 1 / transfer_scenarios$KL_PCB4
+
+transfer_scenarios$air_resistance_percent <-
+  100 * transfer_scenarios$R_air /
+  (transfer_scenarios$R_air + transfer_scenarios$R_water)
+
+transfer_scenarios$water_resistance_percent <-
+  100 * transfer_scenarios$R_water /
+  (transfer_scenarios$R_air + transfer_scenarios$R_water)
+
+
+# Display results ---------------------------------------------
+
+print(transfer_scenarios)
+
+transfer_scenarios <- data.frame(
+  scenario = c(
+    "Published",
+    "Weak stirring",
+    "Strong stirring",
+    "Orbital shaker"
+  ),
+  
+  KL_CO2 = c(
+    4.1e-2,
+    KL_weak,
+    KL_strong,
+    NA_real_  # Replace with your estimate (m/s)
+  )
+)
+
+transfer_scenarios %>%
+  select(
+    scenario,
+    KL_CO2,
+    KL_PCB4,
+    kaw_o_cm_d,
+    air_resistance_percent,
+    water_resistance_percent
+  ) %>%
+  print()
