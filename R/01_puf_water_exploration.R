@@ -1,14 +1,18 @@
 # Review and visualize data
 
 # Install packages
-install.packages("tidyr")
-install.packages("dplyr")
-install.packages("ggplot2")
+{
+  install.packages("tidyr")
+  install.packages("dplyr")
+  install.packages("ggplot2")
+}
 
 # Load libraries
-library(tidyr)
-library(dplyr)
-library(ggplot2)
+{
+  library(tidyr)
+  library(dplyr)
+  library(ggplot2)
+}
 
 # Read data ---------------------------------------------------------------
 data_raw <- read.csv("Data/puf_water.csv")
