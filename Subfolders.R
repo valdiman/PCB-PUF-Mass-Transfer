@@ -6,5 +6,8 @@ dir.create("R")
 dir.create("Data")
 dir.create("Data/Processed")
 
+# Documentation
+dir.create("Documentation")
+
 # Output
 dir.create("Output")
