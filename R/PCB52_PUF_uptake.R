@@ -1,12 +1,22 @@
-# PCB52 PUF uptake | clean reproducible analysis
+# PCB52 PUF uptake
 # Run from project root containing Data/Processed/*.csv
 # Model B is primary; Model A is a reversible diagnostic.
 
-library(dplyr)
-library(ggplot2)
-library(deSolve)
+# Install packages
+{
+  install.packages("dplyr")
+  install.packages("ggplot2")
+  install.packages("deSolve")
+}
 
-# ---- 1. Inputs (edit here) ----
+# Upload libraries
+{
+  library(dplyr)
+  library(ggplot2)
+  library(deSolve)
+}
+
+# 1. Inputs ---------------------------------------------------------------
 water_file <- 'Data/Processed/water_data.csv'
 puf_file   <- 'Data/Processed/puf_data.csv'
 congener_id <- 'PCB52'
@@ -46,7 +56,6 @@ puf_data <- read.csv(puf_file)
 stopifnot(all(c('congener','time_hr','Cw_ng_L','sample_id') %in% names(water_data)))
 stopifnot(all(c('congener','time_hr','PCB_value') %in% names(puf_data)))
 # Verify the exact congener label in both input files.
-# For a combined PCB18+30 peak, the CSV label may differ from 'PCB18.30'.
 if (!(congener_id %in% water_data$congener) ||
     !(congener_id %in% puf_data$congener)) {
   stop(paste0('Congener label not found: ', congener_id,
@@ -54,7 +63,7 @@ if (!(congener_id %in% water_data$congener) ||
               '\nPUF labels: ', paste(unique(puf_data$congener), collapse=', ')))
 }
 
-# ---- 2. Water data: full-period, grouped by sampling period ----
+# 2. Water data: full-period, grouped by sampling period ------------------
 water_obs <- water_data %>%
   filter(congener == congener_id, is.finite(time_hr), is.finite(Cw_ng_L)) %>%
   mutate(time_group = sub('^(T[^_]+)_.*$', '\\1', sample_id))
@@ -73,7 +82,7 @@ puf_obs <- puf_data %>% filter(congener == congener_id,
 puf_fit <- puf_obs %>% filter(time_hr <= fit_end_hr)
 stopifnot(nrow(puf_fit) > 0)
 
-# ---- 3. Full transient air + PUF model ----
+# 3. Full transient air + PUF model ---------------------------------------
 # t in days; concentration in ng/L; transfer coefficients in cm/day.
 # Water is a measured forcing function, not a predicted compartment.
 kinetic_rhs <- function(t, state, parms) {
@@ -119,7 +128,7 @@ objective <- function(ro, model = 'B') {
   sum((puf_fit$PCB_value - pred)^2)
 }
 
-# ---- 4. Fit 0-73 h, predict full period (no late-time refit) ----
+# 4. Fit 0-73 h, predict full period (no late-time refit ------------------
 fit_B <- optimize(function(ro) objective(ro, 'B'), ro_bounds)
 fit_A <- optimize(function(ro) objective(ro, 'A'), ro_bounds)
 results <- data.frame(model = c('B uptake only','A reversible'),
@@ -140,7 +149,7 @@ full_times <- seq(0, max(water_mean$time_hr), length.out = 1000)
 sim_B <- simulate_puf(full_times, ro_B, 'B')
 sim_A <- simulate_puf(full_times, ro_A, 'A')
 
-# ---- 5. Diagnostic summaries ----
+# 5. Diagnostic summaries -------------------------------------------------
 selected_hr <- c(6, 73, 121, 241, 480)
 selected_hr <- selected_hr[selected_hr <= max(full_times)]
 backtransfer <- data.frame(time_hr = selected_hr,
@@ -159,31 +168,119 @@ residuals <- bind_rows(lapply(c('A','B'), function(m) {
                period = ifelse(time_hr <= fit_end_hr, 'fit', 'prediction'))
 print(residuals)
 
-# ---- 6. Figures ----
+# 6. Plots ----------------------------------------------------------------
+# Format fitted parameters
+ro_B_label <- round(ro_B, 1)
+ro_A_label <- round(ro_A, 1)
+
+# Equivalent air-PUF sampling rate
+Rs_B <- ro_B * Apuf_cm2 / 1e6
+
+# 6.1 Water depletion
 p_water <- ggplot() +
-  geom_point(data = water_obs, aes(time_hr, Cw_ng_L), color = 'blue') +
-  geom_point(data = water_mean, aes(time_hr, Cw_ng_L), color = 'red') +
-  geom_line(data = data.frame(time_hr = full_times, Cw = Cw_exp(full_times)),
-            aes(time_hr, Cw), linewidth = 0.9) +
-  labs(title = 'PCB52: measured water depletion',
-       subtitle = 'Blue: observations | Red: means | Black: piecewise exponential',
-       x = 'Time (h)', y = 'PCB52 in water (ng/L)') + theme_bw()
+  geom_point(data = water_obs, aes(time_hr, Cw_ng_L),
+             color = "blue", size = 2.5) +
+  geom_point(data = water_mean, aes(time_hr, Cw_ng_L),
+             color = "red", size = 2.5) +
+  geom_line(data = data.frame(time_hr = full_times,
+                              Cw = Cw_exp(full_times)),
+            aes(time_hr, Cw), color = "black", linewidth = 1) +
+  labs(title = "PCB52: Water depletion",
+       subtitle = "Piecewise exponential interpolation",
+       x = "Time (h)",
+       y = "PCB4 concentration in water (ng/L)") +
+  theme_bw(base_size = 12)
 
-model_lines <- bind_rows(transform(sim_A, model = 'A: reversible'),
-                         transform(sim_B, model = 'B: uptake only'))
+print(p_water)
+
+# 6.2 Combine Model A and Model B predictions
+model_lines <- bind_rows(transform(sim_A, model = "Model A: Reversible"),
+                         transform(sim_B, model = "Model B: Uptake only"))
+
+# 6.3 Model equations for figure annotations
+# Model A:
+# dCpuf/dt = (ro * Apuf / Vpuf) *
+#            (Ca - Cpuf / Kpuf)
+
+# Model B:
+# dCpuf/dt = (ro * Apuf / Vpuf) * Ca
+
+equation_A <- paste0(
+  "Model A: dC[PUF]/dt == ",
+  "(r[o]*A[PUF]/V[PUF])",
+  "(C[a]-C[PUF]/K[PUF])")
+
+equation_B <- paste0(
+  "Model B: dC[PUF]/dt == ",
+  "(r[o]*A[PUF]/V[PUF])*C[a]")
+
+# 6.4 Initial PUF uptake plot
 p_initial <- ggplot() +
-  geom_point(data = puf_fit, aes(time_hr, PCB_value), color = 'blue', size = 2.5) +
+  geom_point(data = puf_fit, aes(time_hr, PCB_value), color = "blue",
+             size = 3) +
   geom_line(data = subset(model_lines, time_hr <= fit_end_hr),
-            aes(time_hr, Mpuf_ng, linetype = model), linewidth = 0.9) +
-  labs(title = 'PCB52: initial PUF uptake (fit)', x = 'Time (h)',
-       y = 'PCB52 in PUF (ng/PUF)') + theme_bw()
-p_full <- ggplot() +
-  geom_point(data = puf_obs, aes(time_hr, PCB_value), color = 'blue', size = 2.5) +
-  geom_line(data = model_lines, aes(time_hr, Mpuf_ng, linetype = model), linewidth = 0.9) +
-  geom_vline(xintercept = fit_end_hr, linetype = 'dotted') +
-  labs(title = 'PCB52: full-period PUF uptake',
-       subtitle = 'Coefficients fitted only through ~73 h; water is measured input',
-       x = 'Time (h)', y = 'PCB52 in PUF (ng/PUF)') + theme_bw()
-print(p_water); print(p_initial); print(p_full)
+            aes(time_hr, Mpuf_ng, linetype = model), linewidth = 1) +
+  annotate("label", x = 50, y = max(puf_fit$PCB_value) * 0.1,
+           label = paste0("Model A: ro = ", ro_A_label, " cm/day\n",
+                          "Model B: ro = ", ro_B_label, " cm/day\n",
+                          "Rs (Model B) = ", round(Rs_B, 5), " m3/day"),
+           hjust = 0, size = 3.5, fill = "white") +
+  labs(title = "PCB52: Initial PUF uptake kinetics",
+       x = "Time (h)", y = "PCB52 mass in PUF (ng/PUF)",
+       linetype = "Kinetic model") +
+  theme_bw(base_size = 12)
 
-print(results)
+# see plot
+print(p_initial)
+
+# save plot
+ggsave("Output/Plots/Model/PCB52_InitialUptake.png", plot = p_initial,
+       width = 10, height = 5, dpi = 500)
+
+# 6.5 Full-period PUF uptake plot
+p_full <- ggplot() +
+  geom_point(data = puf_obs, aes(time_hr, PCB_value), color = "blue",
+             size = 3) +
+  geom_line(data = model_lines, aes(time_hr, Mpuf_ng,
+                                    linetype = model), linewidth = 1) +
+  geom_vline(xintercept = fit_end_hr, linetype = "dotted",
+             color = "gray40") +
+  annotate("label", x = 400, y = max(puf_obs$PCB_value) * 0.45,
+           label = paste0("Model A: ro = ", ro_A_label, " cm/day\n",
+                          "Model B: ro = ", ro_B_label, " cm/day\n",
+                          "Rs (Model B) = ", round(Rs_B, 5), " m3/day"),
+           size = 3.5, fill = "white") +
+  labs(title = "PCB52: Full-period PUF uptake",
+       subtitle = paste0("Fitted using 0-73 h | ",
+                         "Predicted through 480 h"),
+       x = "Time (h)", y = "PCB52 mass in PUF (ng/PUF)",
+       linetype = "Kinetic model") +
+  theme_bw(base_size = 12)
+
+# see plot
+print(p_full)
+
+# 6.6 Display the equations
+p_full <- p_full +
+  annotate("text", x = 400, y = 80,
+           label = paste0("frac(d*C[PUF],dt)==",
+                          "frac(r[o]*A[PUF],V[PUF])*",
+                          "(C[a]-frac(C[PUF],K[PUF]))"),
+           parse = TRUE, size = 4)
+
+# see plot
+print(p_full)
+
+p_full <- p_full +
+  annotate("text", x = 400, y = 40,
+           label = paste0("frac(d*C[PUF],dt)==",
+                          "frac(r[o]*A[PUF],V[PUF])*C[a]"),
+           parse = TRUE, size = 4)
+
+# see plot
+print(p_full)
+
+# save plot
+ggsave("Output/Plots/Model/PCB52.png", plot = p_full, width = 10,
+       height = 5, dpi = 500)
+

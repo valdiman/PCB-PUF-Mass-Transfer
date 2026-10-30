@@ -8,7 +8,7 @@ library(ggplot2)
 
 # Independently estimated uptake coefficients
 ro_data <- data.frame(
-  congener = c("PCB4", "PCB18+30", "PCB52"),
+  congener = c("PCB4", "PCB18", "PCB52"),
   MW = c(188.65, 257.54, 291.99),
   ro = c(1619.601, 1507.263, 1206.890)
 )

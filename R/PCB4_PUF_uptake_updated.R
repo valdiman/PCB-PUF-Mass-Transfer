@@ -158,7 +158,7 @@ residuals <- bind_rows(lapply(c('A','B'), function(m) {
                period = ifelse(time_hr <= fit_end_hr, 'fit', 'prediction'))
 print(residuals)
 
-# 5. Plots ----------------------------------------------------------------
+# 6. Plots ----------------------------------------------------------------
 # Format fitted parameters
 ro_B_label <- round(ro_B, 1)
 ro_A_label <- round(ro_A, 1)
@@ -166,7 +166,7 @@ ro_A_label <- round(ro_A, 1)
 # Equivalent air-PUF sampling rate
 Rs_B <- ro_B * Apuf_cm2 / 1e6
 
-# 5.1 Water depletion
+# 6.1 Water depletion
 p_water <- ggplot() +
   geom_point(data = water_obs, aes(time_hr, Cw_ng_L),
              color = "blue", size = 2.5) +
@@ -183,11 +183,11 @@ p_water <- ggplot() +
 
 print(p_water)
 
-# 5.2 Combine Model A and Model B predictions
+# 6.2 Combine Model A and Model B predictions
 model_lines <- bind_rows(transform(sim_A, model = "Model A: Reversible"),
                          transform(sim_B, model = "Model B: Uptake only"))
 
-# 5.3 Model equations for figure annotations
+# 6.3 Model equations for figure annotations
 # Model A:
 # dCpuf/dt = (ro * Apuf / Vpuf) *
 #            (Ca - Cpuf / Kpuf)
@@ -204,7 +204,7 @@ equation_B <- paste0(
   "Model B: dC[PUF]/dt == ",
   "(r[o]*A[PUF]/V[PUF])*C[a]")
 
-# 5.4 Initial PUF uptake plot
+# 6.4 Initial PUF uptake plot
 p_initial <- ggplot() +
   geom_point(data = puf_fit, aes(time_hr, PCB_value), color = "blue",
              size = 3) +
@@ -227,7 +227,7 @@ print(p_initial)
 ggsave("Output/Plots/Model/PCB4_InitialUptake.png", plot = p_initial,
        width = 10, height = 5, dpi = 500)
 
-# 5.5 Full-period PUF uptake plot
+# 6.5 Full-period PUF uptake plot
 p_full <- ggplot() +
   geom_point(data = puf_obs, aes(time_hr, PCB_value), color = "blue",
              size = 3) +
@@ -250,7 +250,7 @@ p_full <- ggplot() +
 # see plot
 print(p_full)
 
-# 5.6 Display the equations
+# 6.6 Display the equations
 p_full <- p_full +
   annotate("text", x = 400, y = 100,
            label = paste0("frac(d*C[PUF],dt)==",
