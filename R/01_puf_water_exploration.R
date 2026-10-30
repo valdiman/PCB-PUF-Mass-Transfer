@@ -21,7 +21,7 @@ str(data_raw)
 
 # Convert data to long format ---------------------------------------------
 data_long <- data_raw %>%
-  pivot_longer(cols = c(PCB4, PCB18.30, PCB52),
+  pivot_longer(cols = c(PCB4, PCB18, PCB52),
                names_to = "congener",
                values_to = "PCB_value")
 # Check data
@@ -82,28 +82,40 @@ puf_LOQ <- puf_data %>%
 
 # Plots -------------------------------------------------------------------
 # PUF
-ggplot(puf_data, aes(x = time_hr, y = PCB_value,
-                     color = congener)) +
+p.puf <- ggplot(puf_data, aes(x = time_hr, y = PCB_value,
+                              color = congener)) +
   geom_point(size = 3, alpha = 0.8) +
   labs(x = "Time (h)", y = "PCB mass (ng/PUF)",
        color = "PCB congener") +
-  scale_color_discrete(breaks = c("PCB4", "PCB18.30", "PCB52"),
-                       labels = c("PCB4", "PCB18", "PCB52")) +
+  scale_color_discrete(breaks = c("PCB4", "PCB18", "PCB52")) +
   theme_bw(base_size = 12)
+
+# see plot
+p.puf
+
+# save plot
+ggsave("Output/Plots/General/Puf_PCB.png", plot = p.puf, width = 10,
+       height = 5, dpi = 500)
 
 # Water
 water_data <- data_long %>%
   filter(grepl("_W_", sample_id)) %>%
   mutate(Cw_ng_L = PCB_value * 10)
 
-ggplot(water_data, aes(x = time_hr, y = Cw_ng_L,
-                       color = congener)) +
+p.water <- ggplot(water_data, aes(x = time_hr, y = Cw_ng_L,
+                                  color = congener)) +
   geom_point(size = 3, alpha = 0.8) +
   labs(x = "Time (h)", y = "PCB concentration in water (ng/L)",
        color = "PCB congener") +
-  scale_color_discrete(breaks = c("PCB4", "PCB18.30", "PCB52"),
-                       labels = c("PCB4", "PCB18", "PCB52")) +
+  scale_color_discrete(breaks = c("PCB4", "PCB18", "PCB52")) +
   theme_bw(base_size = 12)
+
+# see plot
+p.water
+
+# save plot
+ggsave("Output/Plots/General/Water_PCB.png", plot = p.water, width = 10,
+       height = 5, dpi = 500)
 
 # Export data
 write.csv(puf_data,"Data/Processed/puf_data.csv", row.names = FALSE)
