@@ -50,13 +50,11 @@ ro_bounds <- c(100, 3000)
 # Compare the independently fitted ro with the PCB4 diffusivity-scaled prediction.
 # PCB4-based diffusivity prediction is a comparison only, NOT the fitted value.
 ro_reference <- 1619.601 * (MW_pcb / 188.65)^(-0.335)
-
 water_data <- read.csv(water_file)
 puf_data <- read.csv(puf_file)
 stopifnot(all(c('congener','time_hr','Cw_ng_L','sample_id') %in% names(water_data)))
 stopifnot(all(c('congener','time_hr','PCB_value') %in% names(puf_data)))
 # Verify the exact congener label in both input files.
-# For a combined PCB18+30 peak, the CSV label may differ from 'PCB18.30'.
 if (!(congener_id %in% water_data$congener) ||
     !(congener_id %in% puf_data$congener)) {
   stop(paste0('Congener label not found: ', congener_id,
@@ -130,18 +128,62 @@ objective <- function(ro, model = 'B') {
 }
 
 # 4. Fit 0-73 h, predict full period (no late-time refit ------------------
-fit_B <- optimize(function(ro) objective(ro, 'B'), ro_bounds)
 fit_A <- optimize(function(ro) objective(ro, 'A'), ro_bounds)
-results <- data.frame(model = c('B uptake only','A reversible'),
+fit_B <- optimize(function(ro) objective(ro, 'B'), ro_bounds)
+results <- data.frame(model = c('A reversible', 'B uptake only'),
                       ro_cm_day = c(fit_B$minimum, fit_A$minimum),
                       SS_fit = c(fit_B$objective, fit_A$objective))
 print(results)
-cat('PCB4-scaled predicted ro (not fitted):', ro_reference, 'cm/day\n')
+cat('PCB18-scaled predicted ro (not fitted):', ro_reference, 'cm/day\n')
 cat('Difference (fitted minus scaled prediction):', fit_B$minimum - ro_reference, 'cm/day\n')
 
 # Use the independently fitted Model B estimate for this congener.
-ro_B <- fit_B$minimum
 ro_A <- fit_A$minimum
+ro_B <- fit_B$minimum
+
+# 4.1 Uncertainty in fitted ro --------------------------------------------
+# Number of PUF observations used for fitting
+n_obs <- nrow(puf_fit)
+
+# Residual degrees of freedom
+df_res <- n_obs - 1
+
+if (df_res <= 0) {
+  stop("At least two PUF observations are required.")
+}
+
+# Residual variance from Model B
+sigma2 <- fit_B$objective / df_res
+
+# Numerical curvature of the objective function
+h <- max(1, ro_B * 0.001)
+
+SS_left  <- objective(ro_B - h, "B")
+SS_mid   <- objective(ro_B, "B")
+SS_right <- objective(ro_B + h, "B")
+
+curvature <- (SS_right - 2 * SS_mid + SS_left) / h^2
+
+if (!is.finite(curvature) || curvature <= 0) {
+  stop("Cannot estimate uncertainty: invalid objective curvature.")
+}
+
+# Approximate standard error of ro
+SE_ro <- sqrt(2 * sigma2 / curvature)
+
+# Approximate 95% confidence interval
+t_critical <- qt(0.975, df = df_res)
+
+ro_lower <- ro_B - t_critical * SE_ro
+ro_upper <- ro_B + t_critical * SE_ro
+
+# Display results
+cat("\nPCB18 - MODEL B UNCERTAINTY\n")
+cat("Fitted ro:", round(ro_B, 2), "cm/day\n")
+cat("Standard error:", round(SE_ro, 2), "cm/day\n")
+cat("95% CI:", round(ro_lower, 2), "to",
+    round(ro_upper, 2), "cm/day\n")
+
 Rs_m3_day <- ro_B * Apuf_cm2 / 1e6
 cat(sprintf('Model B equivalent air-PUF sampling rate: %.6f m3/day (%.3f L/day)\n',
             Rs_m3_day, Rs_m3_day * 1000))
@@ -149,6 +191,14 @@ cat(sprintf('Model B equivalent air-PUF sampling rate: %.6f m3/day (%.3f L/day)\
 full_times <- seq(0, max(water_mean$time_hr), length.out = 1000)
 sim_B <- simulate_puf(full_times, ro_B, 'B')
 sim_A <- simulate_puf(full_times, ro_A, 'A')
+
+# 4.2 Save ro uncertainty results -----------------------------------------
+ro_uncertainty <- data.frame(
+  congener = congener_id,
+  ro_cm_day = ro_B,
+  SE_cm_day = SE_ro,
+  CI_lower = ro_lower,
+  CI_upper = ro_upper)
 
 # 5. Diagnostic summaries -------------------------------------------------
 selected_hr <- c(6, 73, 121, 241, 480)
@@ -189,14 +239,15 @@ p_water <- ggplot() +
   labs(title = "PCB18: Water depletion",
        subtitle = "Piecewise exponential interpolation",
        x = "Time (h)",
-       y = "PCB4 concentration in water (ng/L)") +
+       y = "PCB18 concentration in water (ng/L)") +
   theme_bw(base_size = 12)
 
 print(p_water)
 
 # 6.2 Combine Model A and Model B predictions
-model_lines <- bind_rows(transform(sim_A, model = "Model A: Reversible"),
-                         transform(sim_B, model = "Model B: Uptake only"))
+model_lines <- bind_rows(
+  transform(sim_A, model = "Model A: Reversible"),
+  transform(sim_B, model = "Model B: Uptake only"))
 
 # 6.3 Model equations for figure annotations
 # Model A:
@@ -227,7 +278,7 @@ p_initial <- ggplot() +
                           "Rs (Model B) = ", round(Rs_B, 5), " m3/day"),
            hjust = 0, size = 3.5, fill = "white") +
   labs(title = "PCB18: Initial PUF uptake kinetics",
-       x = "Time (h)", y = "PCB4 mass in PUF (ng/PUF)",
+       x = "Time (h)", y = "PCB18 mass in PUF (ng/PUF)",
        linetype = "Kinetic model") +
   theme_bw(base_size = 12)
 
