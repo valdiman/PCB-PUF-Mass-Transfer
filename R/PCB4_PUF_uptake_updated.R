@@ -27,7 +27,21 @@ Aaw_cm2 <- 56.74502
 Apuf_cm2 <- 7.07
 Kaw <- 10^(-1.87155)              # air/water concentration ratio
 Kpuf <- 10^(0.6366 * 6.789298102 - 3.1774) * 21300
-kaw_o_cm_day <- 52.82             # weak-stirring scenario
+MW_pcb <- 188.65
+MW_H2O <- 18.015
+MW_CO2 <- 44.01
+D_H2O_air_cm2_s <- 0.2743615
+D_CO2_water_cm2_s <- 1.67606e-5
+nu_water_cm2_s <- 0.010072884
+KG_H2O_m_s <- 0.003
+film_CO2_um <- 127
+D_pcb_air <- D_H2O_air_cm2_s * (MW_pcb / MW_H2O)^(-0.5)
+D_pcb_water <- D_CO2_water_cm2_s * (MW_pcb / MW_CO2)^(-0.5)
+Sc_pcb <- nu_water_cm2_s / D_pcb_water
+KG_pcb_m_s <- KG_H2O_m_s * (D_pcb_air / D_H2O_air_cm2_s)^0.67
+KL_CO2_m_s <- (D_CO2_water_cm2_s / (film_CO2_um * 1e-4)) / 100
+KL_pcb_m_s <- KL_CO2_m_s * (Sc_pcb / 600)^(-0.5)
+kaw_o_cm_day <- (1 / (1 / (KG_pcb_m_s * Kaw) + 1 / KL_pcb_m_s)) * 100 * 86400
 fit_end_hr <- 74                  # includes observations around 73.1 h
 ro_bounds <- c(100, 3000)
 # Use estimated value from the previous exponential fit for prediction;
@@ -197,9 +211,9 @@ p_initial <- ggplot() +
   geom_line(data = subset(model_lines, time_hr <= fit_end_hr),
             aes(time_hr, Mpuf_ng, linetype = model), linewidth = 1) +
   annotate("label", x = 50, y = max(puf_fit$PCB_value) * 0.1,
-           label = paste0("Model B: ro = ", ro_B_label, " cm/day\n",
-                          "Model A: ro = ", ro_A_label, " cm/day\n",
-                          "Rs (Model B)= ", round(Rs_B, 5), " m3/day"),
+           label = paste0("Model A: ro = ", ro_A_label, " cm/day\n",
+                          "Model B: ro = ", ro_B_label, " cm/day\n",
+                          "Rs (Model B) = ", round(Rs_B, 5), " m3/day"),
            hjust = 0, size = 3.5, fill = "white") +
   labs(title = "PCB4: Initial PUF uptake kinetics",
        x = "Time (h)", y = "PCB4 mass in PUF (ng/PUF)",
